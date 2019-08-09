@@ -7,51 +7,56 @@
 //
 
 import UIKit
-import CoreData
+import RealmSwift
 
 class ToDoListViewController: UITableViewController {
 
-    var itemArray = [Item]()
+    let realm = try! Realm()
+    
+    var toDoItems: Results<Item>?
     var selectedCategory: Category?{
         didSet{
             loadItems()
         }
     }
-    let dataFilePath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("Items.plist")
-    let context = (UIApplication.shared.delegate as! AppDelegate).persistentContainer.viewContext
-    let request: NSFetchRequest<Item> = Item.fetchRequest()
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        print(dataFilePath)
     }
 
 //RETURN NUMBER OF CELLS TO START
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        let numberOfRows = itemArray.count
+        let numberOfRows = toDoItems?.count ?? 1
         return numberOfRows
     }
 //CELL FOR ROW METHOD
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "ToDoItemCell", for: indexPath)
         
-        let item = itemArray[indexPath.row]
-        
-        cell.textLabel?.text = item.title
-        
-        cell.accessoryType = item.checked ? .checkmark : .none
-
+        if let item = toDoItems?[indexPath.row]{
+            cell.textLabel?.text = item.title
+            cell.accessoryType = item.checked ? .checkmark : .none
+        } else {
+            cell.textLabel?.text = "No items added yet"
+        }
+    
         return cell
     }
     
 //DID SELECT CELL METHOD
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        itemArray[indexPath.row].checked = !itemArray[indexPath.row].checked
-//        context.delete(itemArray[indexPath.row])
-//        itemArray.remove(at: indexPath.row)
-        
-        saveItems()
-        
+
+        if let item = toDoItems?[indexPath.row]{
+            do{
+                try realm.write {
+                   item.checked = !item.checked
+                }
+            } catch {
+                print("Error checking off item \(error)")
+            }
+            
+        }
+        tableView.reloadData()
         tableView.deselectRow(at: indexPath, animated: true)
     }
     
@@ -63,29 +68,37 @@ class ToDoListViewController: UITableViewController {
         
         let action = UIAlertAction(title: "Add Item", style: .default) { (action) in
             
-            let newItem = Item(context: self.context)
-            newItem.title = textField.text!
-            newItem.checked = false
-            newItem.parentCategory = self.selectedCategory
-            
-            self.itemArray.append(newItem)
-            
-            self.saveItems()
+            if let currentCategory = self.selectedCategory{
+                do{
+                    try self.realm.write {
+                        let newItem = Item()
+                        newItem.title = textField.text!
+                        newItem.dateCreated = Date()
+                        currentCategory.items.append(newItem)
+                        //ADD NEW ITEM UNDER CURRENT CATEGORY'S ITEM'S LIST (REVERSE RELATIONSHP)
+                    }
+                } catch {
+                    print("Error adding item \(error)")
+                }
+            }
+            self.tableView.reloadData()
         }
         
         alert.addTextField { (alertTextField) in
             alertTextField.placeholder = "Create new item"
             textField = alertTextField
         }
-        
         alert.addAction(action)
         present(alert, animated: true, completion: nil)
     }
     
 //SAVE ITEMS IN COREDATA MODEL
-    func saveItems(){
+    func saveItems(item: Item, category: Category){
         do{
-            try context.save()
+            try realm.write{
+                realm.add(item)
+                category.items.append(item)
+            }
         } catch {
            print("Error saving items \(error)")
         }
@@ -93,20 +106,9 @@ class ToDoListViewController: UITableViewController {
     }
     
 //LOADS ITEMS FROM COREDATA DATAMODEL
-    func loadItems(with request: NSFetchRequest<Item> =  Item.fetchRequest(), predicate: NSPredicate? = nil){
-        let categoryPredicate = NSPredicate(format: "parentCategory.name MATCHES %@", selectedCategory!.name!)
+    func loadItems(){
+        toDoItems = selectedCategory?.items.sorted(byKeyPath: "dateCreated", ascending: true)
         
-        if let additionalPredicate = predicate {
-            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [additionalPredicate, categoryPredicate])
-        } else {
-            request.predicate = categoryPredicate
-        }
-        
-        do{
-            itemArray = try context.fetch(request)
-        } catch {
-            print("Error loading items \(error)")
-        }
         tableView.reloadData()
     }
 }
@@ -114,19 +116,15 @@ class ToDoListViewController: UITableViewController {
 //SEARCHBAR METHODS
 extension ToDoListViewController: UISearchBarDelegate{
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-        let searchPredicate = NSPredicate(format: "title CONTAINS[cd] %@", searchBar.text!)
-        request.predicate = searchPredicate
+        toDoItems = toDoItems?.filter("title CONTAINS[cd] %@", searchBar.text!).sorted(byKeyPath: "dateCreated", ascending: true)
         
-        let sortDescriptor = NSSortDescriptor(key: "title", ascending: true)
-        request.sortDescriptors = [sortDescriptor]
-        
-        loadItems(with: request, predicate: searchPredicate)
+        tableView.reloadData()
     }
-    
+
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
         if searchBar.text!.count == 0 {
             loadItems()
-            
+
             DispatchQueue.main.async {
                 searchBar.resignFirstResponder()
             }
